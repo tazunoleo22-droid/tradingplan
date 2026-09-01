@@ -13,7 +13,7 @@ APP_KEY = os.getenv("APP_API_KEY","")
 SESSION = {"value":None}
 LOCK = threading.Lock()
 
-app = FastAPI(title="Trading Capital Connector", version="2.0.0")
+app = FastAPI(title="Trading Capital Connector", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 def auth(x_app_key: Optional[str]):
@@ -91,7 +91,7 @@ async def call(name, params=None):
 @app.get("/health")
 def health(x_app_key: Optional[str]=Header(default=None)):
     auth(x_app_key)
-    return {"ok":True,"service":"trading-capital-connector","version":"2.0.0"}
+    return {"ok":True,"service":"trading-capital-connector","version":"3.0.0"}
 
 @app.get("/myfxbook/accounts")
 async def accounts(x_app_key: Optional[str]=Header(default=None)):
@@ -140,7 +140,7 @@ def trades(source: Optional[str]=None, x_app_key: Optional[str]=Header(default=N
 @app.get("/validation")
 def validation(x_app_key: Optional[str]=Header(default=None)):
     auth(x_app_key)
-    con=db(); rows=[dict(r) for r in con.execute("SELECT * FROM trades WHERE source='myfxbook'").fetchall()]; con.close()
+    con=db(); rows=[dict(r) for r in con.execute("SELECT * FROM trades WHERE source IN ('myfxbook','validacion')").fetchall()]; con.close()
     if not rows: return {"trades":0,"winRate":None,"profitFactor":None,"net":0}
     pnl=[float(r["profit"] or 0)+float(r["commission"] or 0)+float(r["swap"] or 0) for r in rows]
     wins=sum(1 for x in pnl if x>0); gp=sum(x for x in pnl if x>0); gl=abs(sum(x for x in pnl if x<0))
@@ -157,7 +157,7 @@ def mt4_trade(payload: dict, x_app_key: Optional[str]=Header(default=None)):
     con.execute("""INSERT OR REPLACE INTO trades
     (id,source,account_id,open_time,close_time,symbol,action,lots,open_price,close_price,sl,tp,pips,profit,commission,swap,raw,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-    (ident,"grandcapital",str(payload.get("account_id","")),payload.get("open_time"),payload.get("close_time"),
+    (ident,str(payload.get("source","grandcapital")),str(payload.get("account_id","")),payload.get("open_time"),payload.get("close_time"),
      payload.get("symbol"),payload.get("action"),float(payload.get("lots",0)),float(payload.get("open_price",0)),
      float(payload.get("close_price",0)),float(payload.get("sl",0)),float(payload.get("tp",0)),float(payload.get("pips",0)),
      float(payload.get("profit",0)),float(payload.get("commission",0)),float(payload.get("swap",0)),
