@@ -13,7 +13,7 @@ APP_KEY = os.getenv("APP_API_KEY","")
 SESSION = {"value":None}
 LOCK = threading.Lock()
 
-app = FastAPI(title="Trading Capital Connector", version="3.0.0")
+app = FastAPI(title="Trading Capital Connector", version="4.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 def auth(x_app_key: Optional[str]):
@@ -89,9 +89,18 @@ async def call(name, params=None):
         return d
 
 @app.get("/health")
-def health(x_app_key: Optional[str]=Header(default=None)):
+def health():
+    return {
+        "ok": True,
+        "service": "trading-capital-connector",
+        "version": "4.0.0",
+        "status": "awake"
+    }
+
+@app.get("/auth-check")
+def auth_check(x_app_key: Optional[str]=Header(default=None)):
     auth(x_app_key)
-    return {"ok":True,"service":"trading-capital-connector","version":"3.0.0"}
+    return {"ok": True, "authorized": True}
 
 @app.get("/myfxbook/accounts")
 async def accounts(x_app_key: Optional[str]=Header(default=None)):
