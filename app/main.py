@@ -8,10 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 APP_KEY = os.getenv("APP_API_KEY", "")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+# Acepta tanto https://proyecto.supabase.co como .../rest/v1
+if SUPABASE_URL.endswith("/rest/v1"):
+    SUPABASE_URL = SUPABASE_URL[:-8].rstrip("/")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 DB = os.getenv("DATABASE_PATH", "trading_capital.db")
 
-app = FastAPI(title="Trading Capital Connector", version="5.0.0")
+app = FastAPI(title="Trading Capital Connector", version="5.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -106,7 +109,7 @@ def health():
     return {
         "ok": True,
         "service": "trading-capital-connector",
-        "version": "5.0.0",
+        "version": "5.1.0",
         "status": "awake",
         "storage": "supabase" if use_supabase() else "sqlite-temporal"
     }
