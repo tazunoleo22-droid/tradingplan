@@ -1,4 +1,4 @@
-import os, json, sqlite3
+
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import quote
@@ -14,7 +14,7 @@ if SUPABASE_URL.endswith("/rest/v1"):
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 DB = os.getenv("DATABASE_PATH", "trading_capital.db")
 
-app = FastAPI(title="Trading Capital Connector", version="6.0.0")
+app = FastAPI(title="Trading Capital Connector", version="6.16.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 def now_iso():
@@ -78,6 +78,11 @@ def sqlite_db():
       partial_close INTEGER, slippage_pips REAL, rule_version TEXT, strategy_tag TEXT, data_quality TEXT,
       raw TEXT, created_at TEXT, updated_at TEXT
     )""")
+    con.execute("""CREATE TABLE IF NOT EXISTS account_snapshots(
+      id TEXT PRIMARY KEY, source TEXT, account_id TEXT, broker TEXT, server TEXT, currency TEXT,
+      balance REAL, equity REAL, margin REAL, free_margin REAL, margin_level REAL,
+      server_time TEXT, received_at TEXT, payload TEXT
+    )""")
     con.commit(); return con
 
 async def save_trade(row):
@@ -100,6 +105,34 @@ async def get_trades(source=None, limit=2000):
     q+=" ORDER BY close_time DESC LIMIT ?"; args.append(limit)
     rows=[dict(x) for x in con.execute(q,args).fetchall()]; con.close(); return rows
 
+async def save_account_snapshot(row):
+    if use_supabase():
+        await sb_post("account_snapshots",row,"resolution=merge-duplicates,return=minimal","id")
+        return
+    con=sqlite_db()
+    cols=list(row.keys()); vals=[json.dumps(row[k]) if k=="payload" else row[k] for k in cols]
+    con.execute(f"INSERT OR REPLACE INTO account_snapshots ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",vals)
+    con.commit(); con.close()
+
+async def get_account_snapshots(source=None, account_id=None, limit=200):
+    limit=max(1,min(int(limit),5000))
+    if use_supabase():
+        q=f"select=*&order=server_time.desc&limit={limit}"
+        if source: q+=f"&source=eq.{quote(source,safe='')}"
+        if account_id: q+=f"&account_id=eq.{quote(account_id,safe='')}"
+        return await sb_get("account_snapshots",q)
+    con=sqlite_db(); q="SELECT * FROM account_snapshots"; cond=[]; args=[]
+    if source: cond.append("source=?"); args.append(source)
+    if account_id: cond.append("account_id=?"); args.append(account_id)
+    if cond: q+=" WHERE "+" AND ".join(cond)
+    q+=" ORDER BY server_time DESC LIMIT ?"; args.append(limit)
+    rows=[dict(x) for x in con.execute(q,args).fetchall()]; con.close()
+    for r in rows:
+        if isinstance(r.get("payload"),str):
+            try:r["payload"]=json.loads(r["payload"])
+            except:pass
+    return rows
+
 async def update_sync_state(source, account_id, ticket):
     if not use_supabase(): return
     row={"source":source,"account_id":account_id,"last_ticket":ticket,"last_received_at":now_iso(),"received_count":1}
@@ -110,7 +143,7 @@ async def update_sync_state(source, account_id, ticket):
 
 @app.get("/health")
 def health():
-    return {"ok":True,"service":"trading-capital-connector","version":"6.0.0","status":"awake","storage":"supabase" if use_supabase() else "sqlite-temporal"}
+    return {"ok":True,"service":"trading-capital-connector","version":"6.16.0","status":"awake","storage":"supabase" if use_supabase() else "sqlite-temporal"}
 
 @app.get("/auth-check")
 def auth_check(x_app_key: Optional[str]=Header(default=None)):
@@ -149,6 +182,36 @@ async def mt4_trade(payload:dict,x_app_key:Optional[str]=Header(default=None)):
     }
     await save_trade(row); await update_sync_state(source,account_id,ticket)
     return {"ok":True,"id":ident,"storage":"supabase" if use_supabase() else "sqlite-temporal"}
+
+@app.post("/mt4/account-snapshot")
+async def mt4_account_snapshot(payload:dict,x_app_key:Optional[str]=Header(default=None)):
+    auth(x_app_key)
+    required=["account_id","balance","equity","server_time"]
+    missing=[k for k in required if payload.get(k) in (None,"")]
+    if missing: raise HTTPException(400,"Faltan campos MT4 account snapshot: "+", ".join(missing))
+    source=str(payload.get("source","grandcapital"))
+    account_id=str(payload.get("account_id",""))
+    server_time=str(payload.get("server_time"))
+    # Stable id at one-minute resolution prevents accidental duplicate timer sends.
+    minute=server_time[:16].replace("-","").replace(":","").replace("T","").replace(" ","")
+    ident=f"{source}:{account_id}:{minute}"
+    row={
+      "id":ident,"source":source,"account_id":account_id,
+      "broker":str(payload.get("broker","")),"server":str(payload.get("server","")),
+      "currency":str(payload.get("currency","")),
+      "balance":f(payload.get("balance")),"equity":f(payload.get("equity")),
+      "margin":f(payload.get("margin")),"free_margin":f(payload.get("free_margin")),
+      "margin_level":f(payload.get("margin_level")) if payload.get("margin_level") is not None else None,
+      "server_time":server_time,"received_at":now_iso(),"payload":payload
+    }
+    await save_account_snapshot(row)
+    return {"ok":True,"id":ident,"storage":"supabase" if use_supabase() else "sqlite-temporal"}
+
+@app.get("/account-snapshots")
+async def account_snapshots(source:Optional[str]=None,account_id:Optional[str]=None,limit:int=200,x_app_key:Optional[str]=Header(default=None)):
+    auth(x_app_key)
+    rows=await get_account_snapshots(source,account_id,limit)
+    return {"account_snapshots":rows,"count":len(rows),"storage":"supabase" if use_supabase() else "sqlite-temporal"}
 
 @app.get("/trades")
 async def trades(source:Optional[str]=None,limit:int=2000,x_app_key:Optional[str]=Header(default=None)):
@@ -238,6 +301,11 @@ async def diagnostics(x_app_key:Optional[str]=Header(default=None)):
     if use_supabase():
         try: sync=await sb_get("sync_state","select=*&order=last_received_at.desc&limit=50")
         except: sync=[]
+    try:
+        broker_snaps=await get_account_snapshots(limit=20)
+    except:
+        broker_snaps=[]
     return {"ok":True,"storage":"supabase" if use_supabase() else "sqlite-temporal","total_trades":len(rows),
             "by_source":by_source,"missing_initial_sl":missing_sl,"missing_result_r":missing_r,
-            "missing_comment":missing_comment,"duplicates":0,"last_received":latest,"sync_state":sync}
+            "missing_comment":missing_comment,"duplicates":0,"last_received":latest,"sync_state":sync,
+            "latest_account_snapshot":broker_snaps[0] if broker_snaps else None}
